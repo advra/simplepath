@@ -15,6 +15,9 @@ local DEFAULT_SETTINGS = {
 	COMPARISON_CHECKS = 1;
 
 	JUMP_WHEN_STUCK = true;
+	
+	-- whether to move within range of the target (if target is humanoid avoids jumping ontop/bumping into them)
+	RADIUS_THRESHOLD = 5;
 }
 
 ---------------------------------------------------------------------
@@ -128,7 +131,7 @@ local function invokeWaypointReached(self)
 end
 
 local function moveToFinished(self, reached)
-	
+
 	--Stop execution if Path is destroyed
 	if not getmetatable(self) then return end
 
@@ -166,6 +169,28 @@ local function moveToFinished(self, reached)
 		self._visualWaypoints = destroyVisualWaypoints(self._visualWaypoints)
 		declareError(self, self.ErrorType.TargetUnreachable)
 	end
+end
+
+local function removeCloseWaypoints(waypoints, distance, flying)
+	flying = flying or false
+	-- ref last waypoint then loop through all waypoints to delete until we get closest to distance
+	local lastWaypoint = waypoints[#waypoints]
+	while #waypoints > 2 do
+		local secondLastWaypoint = waypoints[#waypoints - 1]
+		local distanceCheck
+		if flying then
+			distanceCheck = (lastWaypoint.Position - secondLastWaypoint.Position).Magnitude
+		else
+			distanceCheck = ((lastWaypoint.Position - secondLastWaypoint.Position)*Vector3.new(1, 0, 1)).Magnitude
+		end
+
+		if distanceCheck < distance then
+			table.remove(waypoints, #waypoints)
+		else
+			break
+		end
+	end
+	return waypoints
 end
 
 --Refer to Settings.COMPARISON_CHECKS
@@ -251,6 +276,19 @@ function Path:Destroy()
 	end
 end
 
+function Path:IsWithinTargetRadius(target, radius: number, flying: boolean)
+	radius = radius or DEFAULT_SETTINGS.RADIUS_THRESHOLD
+	local distanceCheck
+	target = (typeof(target) == "Vector3" and target) or target.Position
+	if flying then
+		distanceCheck = (target - self._agent.PrimaryPart.Position).Magnitude
+	else
+		distanceCheck = ((target - self._agent.PrimaryPart.Position)*Vector3.new(1, 0, 1)).Magnitude
+	end
+
+	return distanceCheck < radius
+end
+
 function Path:Stop()
 	if not self._humanoid then
 		output(error, "Attempt to call Path:Stop() on a non-humanoid.")
@@ -268,8 +306,8 @@ function Path:Stop()
 	self._events.Stopped:Fire(self._model)
 end
 
-function Path:Run(target)
-
+function Path:Run(target, radius: number)
+	
 	--Non-humanoid handle case
 	if not target and not self._humanoid and self._target then
 		moveToFinished(self, true)
@@ -305,6 +343,17 @@ function Path:Run(target)
 		declareError(self, self.ErrorType.ComputationError)
 		return false
 	end
+	
+	-- if within radius is set filter the waypoints calculated
+	if radius then
+		-- Check computed path
+		local waypoints = self._path:GetWaypoints()
+		-- Remove waypoints within 10 studs of each other
+		self._waypoints = removeCloseWaypoints(waypoints, radius)
+	end
+	
+	-- check if we have waypoints valid to walk otherwise ignore
+	if not self._waypoints then return false end
 
 	--Set status to active; pathfinding starts
 	self._status = (self._humanoid and Path.StatusType.Active) or Path.StatusType.Idle
@@ -316,7 +365,6 @@ function Path:Run(target)
 	end)
 
 	--Initialize waypoints
-	self._waypoints = self._path:GetWaypoints()
 	self._currentWaypoint = 2
 
 	--Refer to Settings.COMPARISON_CHECKS
